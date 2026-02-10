@@ -61,6 +61,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .pin:
             if let rect = capturedRect {
                 let pin = PinWindow(image: image, frame: rect)
+                pin.onAction = { [weak self] action, pinWin in
+                    self?.handlePinAction(action, pin: pinWin)
+                }
                 pin.makeKeyAndOrderFront(nil)
                 pinWindows.append(pin)
             }
@@ -70,6 +73,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .scrollCapture:
             // Phase 4
             break
+        }
+    }
+    // MARK: - Pin Actions
+
+    private func handlePinAction(_ action: PinAction, pin: PinWindow) {
+        let image = pin.pinnedImage
+        switch action {
+        case .copy:
+            ClipboardManager.copyToClipboard(image)
+        case .save:
+            pin.dismiss()
+            pinWindows.removeAll { $0 === pin }
+            ImageExporter.saveWithDialog(image)
+        case .edit:
+            // Phase 3
+            break
+        case .close:
+            pin.dismiss()
+            pinWindows.removeAll { $0 === pin }
         }
     }
 }

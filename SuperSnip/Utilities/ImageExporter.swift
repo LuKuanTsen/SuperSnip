@@ -5,7 +5,7 @@ final class ImageExporter {
     static func saveWithDialog(_ image: CGImage) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png, .jpeg]
-        panel.nameFieldStringValue = "screenshot.png"
+        panel.nameFieldStringValue = defaultFilename()
         panel.canCreateDirectories = true
 
         // LSUIElement apps lose focus easily, causing the save panel to dismiss.
@@ -29,5 +29,13 @@ final class ImageExporter {
 
         CGImageDestinationAddImage(dest, image, nil)
         CGImageDestinationFinalize(dest)
+    }
+
+    private static func defaultFilename() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate, .withFullTime, .withDashSeparatorInDate, .withColonSeparatorInTime]
+        // Replace colons with dashes for filesystem compatibility
+        let timestamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        return "screenshot-\(timestamp).png"
     }
 }

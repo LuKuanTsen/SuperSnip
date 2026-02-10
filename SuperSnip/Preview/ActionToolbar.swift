@@ -24,6 +24,7 @@ struct ActionToolbar: View {
             Divider().frame(height: 20)
 
             toolbarButton(icon: "pencil.and.outline", tooltip: "Edit", action: .edit)
+            toolbarButton(icon: "arrow.up.and.down.text.horizontal", tooltip: "Scroll Capture", action: .scrollCapture)
 
             Divider().frame(height: 20)
 

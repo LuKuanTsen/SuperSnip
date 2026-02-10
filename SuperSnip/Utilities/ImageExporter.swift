@@ -8,7 +8,17 @@ final class ImageExporter {
         panel.nameFieldStringValue = "screenshot.png"
         panel.canCreateDirectories = true
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        // LSUIElement apps lose focus easily, causing the save panel to dismiss.
+        // Temporarily become a regular app so the panel stays interactive.
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let response = panel.runModal()
+
+        // Switch back to accessory (menu bar only, no Dock icon)
+        NSApp.setActivationPolicy(.accessory)
+
+        guard response == .OK, let url = panel.url else { return }
 
         let isPNG = url.pathExtension.lowercased() == "png"
         guard let dest = CGImageDestinationCreateWithURL(

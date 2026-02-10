@@ -52,8 +52,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ClipboardManager.copyToClipboard(image)
             dismissPreview()
         case .save:
-            ImageExporter.saveWithDialog(image)
+            let imageToSave = image
             dismissPreview()
+            ImageExporter.saveWithDialog(imageToSave)
         case .edit:
             // Phase 3
             break
@@ -80,19 +81,23 @@ extension AppDelegate: SelectionViewDelegate {
         overlayWindow?.orderOut(nil)
         overlayWindow = nil
 
-        guard let image = ScreenCaptureManager.capture(rect: rect) else {
-            print("Capture failed")
-            return
-        }
-        capturedImage = image
-        capturedRect = rect
+        // Wait for the overlay to be fully removed from screen before capturing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self else { return }
+            guard let image = ScreenCaptureManager.capture(rect: rect) else {
+                print("Capture failed")
+                return
+            }
+            self.capturedImage = image
+            self.capturedRect = rect
 
-        let preview = CapturePreviewWindow(image: image, screenRect: rect)
-        preview.onAction = { [weak self] action in
-            self?.handleToolbarAction(action)
+            let preview = CapturePreviewWindow(image: image, screenRect: rect)
+            preview.onAction = { [weak self] action in
+                self?.handleToolbarAction(action)
+            }
+            preview.makeKeyAndOrderFront(nil)
+            self.previewWindow = preview
         }
-        preview.makeKeyAndOrderFront(nil)
-        previewWindow = preview
     }
 
     func selectionDidCancel() {

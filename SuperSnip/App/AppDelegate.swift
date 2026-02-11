@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 import Combine
 
+@main
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlayWindows: [OverlayWindow] = []
     private var selectionCoordinator: SelectionCoordinator?
@@ -17,6 +18,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var scrollCaptureRect: CGRect?
     private var scrollCaptureBorderWindow: NSPanel?
     private var scrollCaptureDebugMode = false
+
+    // GIF recording
+    private var gifRecordingManager: GifRecordingManager?
+    private var recordingIndicator: RecordingIndicator?
+    private var recordingEscMonitor: Any?
+
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.run()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Request screen capture permission
@@ -36,10 +49,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Capture Area", action: #selector(dockCaptureArea), keyEquivalent: ""))
+        return menu
+    }
+
+    @objc private func dockCaptureArea() {
+        startCapture()
+    }
+
     func startCapture() {
-        // Dismiss any existing overlay/preview/scroll capture
+        // Dismiss any existing overlay/preview/scroll capture/gif recording
         dismissPreview()
         stopScrollCapture()
+        stopGifRecording()
         dismissOverlays()
 
         let coordinator = SelectionCoordinator()
@@ -81,8 +105,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dismissPreview()
         case .save:
             let imageToSave = image
-            dismissPreview()
-            ImageExporter.saveWithDialog(imageToSave)
+            guard let window = previewWindow else { return }
+            ImageExporter.saveAsSheet(imageToSave, from: window) { [weak self] in
+                self?.dismissPreview()
+            }
         case .pin:
             if let rect = capturedRect {
                 let pin = PinWindow(image: image, frame: rect)
@@ -103,6 +129,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             previewWindow?.performUndo()
         case .redo:
             previewWindow?.performRedo()
+        case .recordGif:
+            guard let rect = capturedRect else { return }
+            dismissPreview()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.startGifRecording(rect: rect)
+            }
         case .scrollCapture, .scrollCaptureDebug:
             guard let rect = capturedRect else { return }
             scrollCaptureDebugMode = (action == .scrollCaptureDebug)
@@ -120,11 +152,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let image = pin.pinnedImage
         switch action {
         case .copy:
-            ClipboardManager.copyToClipboard(image)
+            if let gifData = pin.gifData {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setData(gifData, forType: NSPasteboard.PasteboardType("com.compuserve.gif"))
+            } else {
+                ClipboardManager.copyToClipboard(image)
+            }
         case .save:
-            pin.dismiss()
-            pinWindows.removeAll { $0 === pin }
-            ImageExporter.saveWithDialog(image)
+            let gifData = pin.gifData
+            let completion: () -> Void = { [weak self] in
+                pin.dismiss()
+                self?.pinWindows.removeAll { $0 === pin }
+            }
+            if let gifData {
+                ImageExporter.saveGifAsSheet(gifData, from: pin, completion: completion)
+            } else {
+                ImageExporter.saveAsSheet(image, from: pin, completion: completion)
+            }
         case .close:
             pin.dismiss()
             pinWindows.removeAll { $0 === pin }
@@ -294,6 +339,145 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             )
 
             let pin = PinWindow(image: finalImage, frame: pinRect)
+            pin.onAction = { [weak self] action, pinWin in
+                self?.handlePinAction(action, pin: pinWin)
+            }
+            pin.makeKeyAndOrderFront(nil)
+            self.pinWindows.append(pin)
+        }
+    }
+
+    // MARK: - GIF Recording
+
+    private var gifRecordingStartTime: Date?
+    private var gifRecordingTimer: Timer?
+
+    private func startGifRecording(rect: CGRect) {
+        // Show border
+        showScrollCaptureBorder(rect: rect)
+
+        // Show indicator
+        let indicator = RecordingIndicator()
+        indicator.show(below: rect)
+        indicator.onStop = { [weak self] in
+            self?.finishGifRecording()
+        }
+        recordingIndicator = indicator
+
+        // Start recording
+        let manager = GifRecordingManager(rect: rect)
+        gifRecordingManager = manager
+        gifRecordingStartTime = Date()
+
+        // Timer for elapsed time display
+        gifRecordingTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self, let start = self.gifRecordingStartTime else { return }
+            self.recordingIndicator?.updateElapsedTime(Date().timeIntervalSince(start))
+        }
+
+        manager.start(
+            onFrameAdded: { [weak self] count in
+                DispatchQueue.main.async {
+                    self?.recordingIndicator?.updateFrameCount(count)
+                }
+            },
+            onComplete: { [weak self] frames in
+                self?.handleGifRecordingComplete(frames: frames)
+            }
+        )
+
+        // ESC monitor
+        recordingEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 {
+                self?.finishGifRecording()
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func finishGifRecording() {
+        gifRecordingManager?.stop()
+    }
+
+    private func stopGifRecording() {
+        gifRecordingTimer?.invalidate()
+        gifRecordingTimer = nil
+        gifRecordingStartTime = nil
+        if let monitor = recordingEscMonitor {
+            NSEvent.removeMonitor(monitor)
+            recordingEscMonitor = nil
+        }
+        recordingIndicator?.dismiss()
+        recordingIndicator = nil
+        gifRecordingManager = nil
+        scrollCaptureBorderWindow?.orderOut(nil)
+        scrollCaptureBorderWindow = nil
+    }
+
+    private func handleGifRecordingComplete(frames: [CGImage]) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+
+            // Clean up UI
+            self.gifRecordingTimer?.invalidate()
+            self.gifRecordingTimer = nil
+            self.gifRecordingStartTime = nil
+            if let monitor = self.recordingEscMonitor {
+                NSEvent.removeMonitor(monitor)
+                self.recordingEscMonitor = nil
+            }
+            self.recordingIndicator?.dismiss()
+            self.recordingIndicator = nil
+            self.scrollCaptureBorderWindow?.orderOut(nil)
+            self.scrollCaptureBorderWindow = nil
+
+            guard !frames.isEmpty else {
+                self.gifRecordingManager = nil
+                return
+            }
+
+            // Encode to GIF
+            let frameDelay = self.gifRecordingManager?.frameDelay ?? (1.0 / 8.0)
+            self.gifRecordingManager = nil
+            guard let gifData = GifEncoder.encodeToData(frames: frames, frameDelay: frameDelay) else {
+                print("GIF encoding failed")
+                return
+            }
+
+            // Copy GIF data to clipboard
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setData(gifData, forType: NSPasteboard.PasteboardType("com.compuserve.gif"))
+
+            // Show first frame in a pin window (frames are already 1x point size)
+            let firstFrame = frames[0]
+            var displayWidth = CGFloat(firstFrame.width)
+            var displayHeight = CGFloat(firstFrame.height)
+            let maxDisplayHeight: CGFloat = 600.0
+            let maxDisplayWidth: CGFloat = 800.0
+
+            if displayHeight > maxDisplayHeight {
+                let ratio = maxDisplayHeight / displayHeight
+                displayHeight = maxDisplayHeight
+                displayWidth *= ratio
+            }
+            if displayWidth > maxDisplayWidth {
+                let ratio = maxDisplayWidth / displayWidth
+                displayWidth = maxDisplayWidth
+                displayHeight *= ratio
+            }
+
+            let screenCenter = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080)
+            let pinRect = CGRect(
+                x: screenCenter.midX - displayWidth / 2,
+                y: screenCenter.midY - displayHeight / 2,
+                width: displayWidth,
+                height: displayHeight
+            )
+
+            let pin = PinWindow(image: firstFrame, frame: pinRect)
+            pin.gifData = gifData
             pin.onAction = { [weak self] action, pinWin in
                 self?.handlePinAction(action, pin: pinWin)
             }

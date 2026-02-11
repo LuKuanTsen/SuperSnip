@@ -7,6 +7,7 @@ enum ToolbarAction {
     case cancel
     case scrollCapture
     case scrollCaptureDebug
+    case recordGif
     case draw
     case mosaic
     case undo
@@ -73,6 +74,7 @@ struct ActionToolbar: View {
 
             Divider().frame(height: 20)
 
+            toolbarButton(icon: "record.circle", tooltip: "Record GIF", action: .recordGif)
             scrollCaptureButton()
 
             Divider().frame(height: 20)

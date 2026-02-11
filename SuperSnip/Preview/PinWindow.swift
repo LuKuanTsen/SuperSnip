@@ -11,6 +11,7 @@ enum PinAction {
 
 final class PinWindow: NSPanel {
     let pinnedImage: CGImage
+    var gifData: Data?
     var onAction: ((PinAction, PinWindow) -> Void)?
 
     private var toolbarWindow: NSPanel?

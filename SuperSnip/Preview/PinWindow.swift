@@ -146,13 +146,19 @@ final class PinWindow: NSPanel {
         return handleRect.contains(point)
     }
 
-    /// Runs a synchronous drag loop for smooth resize. Anchors at top-left (visual).
+    /// Runs a synchronous drag loop for smooth resize.
+    /// Anchor = visible top-left: if window extends above screen, anchors at screen top edge.
     func performResize(with initialEvent: NSEvent) {
         let startMouse = NSEvent.mouseLocation
         let startFrame = self.frame
-        // In AppKit coords, top-left visual = (origin.x, origin.y + height)
-        let anchorTopLeft = CGPoint(x: startFrame.origin.x, y: startFrame.maxY)
         let aspect = startFrame.height / startFrame.width
+
+        // Determine anchor Y: clamp to screen's visible top if window extends above it
+        let screenTop = NSScreen.screens
+            .first(where: { $0.frame.intersects(startFrame) })?
+            .visibleFrame.maxY ?? startFrame.maxY
+        let anchorY = min(startFrame.maxY, screenTop)
+        let anchorX = startFrame.origin.x
 
         // Hide toolbar during resize to avoid it lagging behind
         hideToolbar()
@@ -168,10 +174,9 @@ final class PinWindow: NSPanel {
                 let newWidth = max(minSize.width, startFrame.width + deltaX)
                 let newHeight = newWidth * aspect
 
-                // Anchor at top-left: origin.y = anchorTopLeft.y - newHeight
                 let newFrame = NSRect(
-                    x: anchorTopLeft.x,
-                    y: anchorTopLeft.y - newHeight,
+                    x: anchorX,
+                    y: anchorY - newHeight,
                     width: newWidth,
                     height: newHeight
                 )

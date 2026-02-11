@@ -5,6 +5,8 @@ enum PinAction {
     case copy
     case save
     case close
+    case draw
+    case mosaic
 }
 
 final class PinWindow: NSPanel {
@@ -374,6 +376,11 @@ struct PinToolbar: View {
         HStack(spacing: 2) {
             pinButton(icon: "doc.on.doc", tooltip: "Copy", action: .copy)
             pinButton(icon: "square.and.arrow.down", tooltip: "Save", action: .save)
+
+            Divider().frame(height: 20)
+
+            pinButton(icon: "pencil.tip", tooltip: "Draw", action: .draw)
+            pinButton(icon: "square.grid.3x3", tooltip: "Mosaic", action: .mosaic)
 
             Divider().frame(height: 20)
 

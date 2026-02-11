@@ -128,7 +128,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .close:
             pin.dismiss()
             pinWindows.removeAll { $0 === pin }
+        case .draw, .mosaic:
+            let pinFrame = pin.frame
+            pin.dismiss()
+            pinWindows.removeAll { $0 === pin }
+            openEditorForImage(image, frame: pinFrame, mode: action == .draw ? .draw : .mosaic)
         }
+    }
+
+    private func openEditorForImage(_ image: CGImage, frame: CGRect, mode: CanvasEditMode) {
+        dismissPreview()
+        capturedImage = image
+        capturedRect = frame
+
+        let preview = CapturePreviewWindow(image: image, screenRect: frame)
+        preview.onAction = { [weak self] action in
+            self?.handleToolbarAction(action)
+        }
+        preview.onImageEdited = { [weak self] editedImage in
+            guard let self else { return }
+            self.capturedImage = editedImage
+            let nsImage = NSImage(cgImage: editedImage, size: NSSize(width: frame.width, height: frame.height))
+            if let imageView = self.previewWindow?.contentView as? NSImageView {
+                imageView.image = nsImage
+            }
+        }
+        preview.makeKeyAndOrderFront(nil)
+        self.previewWindow = preview
+
+        // Immediately enter editing mode
+        preview.enterEditingMode(mode: mode, image: image)
     }
 
     // MARK: - Scroll Capture

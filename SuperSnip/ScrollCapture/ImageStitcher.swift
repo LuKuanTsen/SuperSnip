@@ -53,56 +53,79 @@ final class ImageStitcher {
         var validOverlaps = [Int]()
         var lastValidIdx = 0
         var pairInfos = [StitchDebugInfo.PairInfo]()
-        var consecutiveSkips = 0
-        let maxConsecutiveSkips = 3
+        let maxBacktrack = 5 // How many earlier valid frames to try on failure
 
         for i in 1..<frames.count {
-            guard let top = thumbs[lastValidIdx],
-                  let bottom = thumbs[i] else {
+            guard let bottom = thumbs[i] else {
                 pairInfos.append(.init(
                     frameIndex: i, comparedAgainst: lastValidIdx,
                     thumbOverlap: 0, fullOverlap: 0, bestScore: .infinity,
                     decision: "skipped (thumbnail failed)"
                 ))
-                consecutiveSkips += 1
                 continue
             }
 
-            let (thumbOverlap, bestScore) = findOverlapWithScore(top: top, bottom: bottom)
-            let fullOverlap = thumbOverlap * scaleFactor
+            // Try matching against recent valid frames, newest first.
+            // If the best match is an earlier frame, intermediate frames were bounce artifacts.
+            var matchedValidPos = -1 // position in validIndices
+            var matchedOverlap = 0
+            var matchedScore = Double.infinity
+            var triedAgainst = lastValidIdx
 
-            // Skip frames with no overlap found (likely reverse scroll or content change).
-            // The next frame will be compared against the last valid frame instead.
-            if thumbOverlap == 0 {
-                if consecutiveSkips < maxConsecutiveSkips {
-                    pairInfos.append(.init(
-                        frameIndex: i, comparedAgainst: lastValidIdx,
-                        thumbOverlap: 0, fullOverlap: 0, bestScore: bestScore,
-                        decision: "skipped (no overlap, will retry next frame against \(lastValidIdx))"
-                    ))
-                    consecutiveSkips += 1
-                    continue
-                } else {
-                    // Too many consecutive skips — force-keep to avoid losing content
-                    pairInfos.append(.init(
-                        frameIndex: i, comparedAgainst: lastValidIdx,
-                        thumbOverlap: 0, fullOverlap: 0, bestScore: bestScore,
-                        decision: "force-kept (no overlap, \(consecutiveSkips) consecutive skips)"
-                    ))
+            let searchStart = validIndices.count - 1
+            let searchEnd = max(0, validIndices.count - maxBacktrack)
+
+            for j in stride(from: searchStart, through: searchEnd, by: -1) {
+                let refIdx = validIndices[j]
+                guard let top = thumbs[refIdx] else { continue }
+
+                let (thumbOverlap, bestScore) = findOverlapWithScore(top: top, bottom: bottom)
+                if thumbOverlap > 0 {
+                    matchedValidPos = j
+                    matchedOverlap = thumbOverlap
+                    matchedScore = bestScore
+                    triedAgainst = refIdx
+                    break // Take the most recent match
                 }
-            } else {
-                let pct = fullOverlap * 100 / frames[i].height
-                pairInfos.append(.init(
-                    frameIndex: i, comparedAgainst: lastValidIdx,
-                    thumbOverlap: thumbOverlap, fullOverlap: fullOverlap, bestScore: bestScore,
-                    decision: "kept (overlap \(pct)%)"
-                ))
+
+                // Track the first (most recent) frame we tried for debug logging
+                if j == searchStart { triedAgainst = refIdx }
             }
 
-            consecutiveSkips = 0
-            validIndices.append(i)
-            validOverlaps.append(fullOverlap)
-            lastValidIdx = i
+            if matchedValidPos >= 0 {
+                let refIdx = validIndices[matchedValidPos]
+                let fullOverlap = matchedOverlap * scaleFactor
+                let pct = fullOverlap * 100 / frames[i].height
+
+                // If matched against an earlier frame, discard intermediate bounce frames
+                if matchedValidPos < validIndices.count - 1 {
+                    let discarded = validIndices.count - 1 - matchedValidPos
+                    validIndices = Array(validIndices.prefix(matchedValidPos + 1))
+                    validOverlaps = Array(validOverlaps.prefix(matchedValidPos))
+                    pairInfos.append(.init(
+                        frameIndex: i, comparedAgainst: refIdx,
+                        thumbOverlap: matchedOverlap, fullOverlap: fullOverlap, bestScore: matchedScore,
+                        decision: "kept (overlap \(pct)%, backtracked, discarded \(discarded) bounce frames)"
+                    ))
+                } else {
+                    pairInfos.append(.init(
+                        frameIndex: i, comparedAgainst: refIdx,
+                        thumbOverlap: matchedOverlap, fullOverlap: fullOverlap, bestScore: matchedScore,
+                        decision: "kept (overlap \(pct)%)"
+                    ))
+                }
+
+                validIndices.append(i)
+                validOverlaps.append(fullOverlap)
+                lastValidIdx = i
+            } else {
+                // No match against any recent valid frame — skip
+                pairInfos.append(.init(
+                    frameIndex: i, comparedAgainst: triedAgainst,
+                    thumbOverlap: 0, fullOverlap: 0, bestScore: matchedScore,
+                    decision: "skipped (no overlap against last \(min(maxBacktrack, validIndices.count)) valid frames)"
+                ))
+            }
         }
 
         let debug = StitchDebugInfo(

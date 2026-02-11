@@ -33,7 +33,7 @@ final class PinWindow: NSPanel {
         self.isOpaque = false
         self.backgroundColor = .clear
         self.hasShadow = true
-        self.isMovableByWindowBackground = true
+        self.isMovableByWindowBackground = false
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         self.minSize = NSSize(width: 50, height: 50)
         // Do NOT set contentAspectRatio — it conflicts with manual resize anchoring
@@ -75,6 +75,19 @@ final class PinWindow: NSPanel {
     }
 
     override var canBecomeKey: Bool { true }
+
+    // Allow dragging beyond screen edges (macOS normally clamps to menu bar)
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        return frameRect
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { // ESC
+            onAction?(.close, self)
+        } else {
+            super.keyDown(with: event)
+        }
+    }
 
     // MARK: - Hover tracking
 
@@ -241,8 +254,10 @@ final class PinWindow: NSPanel {
 
 final class PinContentView: NSView {
     weak var pinWindow: PinWindow?
+    private var dragStartMouse: CGPoint?
+    private var dragStartOrigin: CGPoint?
 
-    override var mouseDownCanMoveWindow: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func mouseDown(with event: NSEvent) {
         guard let pinWindow else {
@@ -250,12 +265,29 @@ final class PinContentView: NSView {
             return
         }
         if pinWindow.isInResizeHandle(event.locationInWindow) {
-            // Enter synchronous resize loop
             pinWindow.performResize(with: event)
         } else {
-            // Let the system handle window dragging
-            super.mouseDown(with: event)
+            // Record initial positions — compute absolute offset each frame to avoid drift
+            dragStartMouse = NSEvent.mouseLocation
+            dragStartOrigin = pinWindow.frame.origin
         }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let pinWindow,
+              let startMouse = dragStartMouse,
+              let startOrigin = dragStartOrigin else { return }
+        let current = NSEvent.mouseLocation
+        let newOrigin = CGPoint(
+            x: startOrigin.x + (current.x - startMouse.x),
+            y: startOrigin.y + (current.y - startMouse.y)
+        )
+        pinWindow.setFrameOrigin(newOrigin)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragStartMouse = nil
+        dragStartOrigin = nil
     }
 }
 
@@ -298,10 +330,18 @@ final class ResizeGripView: NSView {
 // MARK: - Draggable Image View
 
 final class DraggableImageView: NSImageView {
-    override var mouseDownCanMoveWindow: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func mouseDown(with event: NSEvent) {
         nextResponder?.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        nextResponder?.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        nextResponder?.mouseUp(with: event)
     }
 }
 

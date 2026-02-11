@@ -3,16 +3,12 @@ import AppKit
 final class ScrollCaptureManager {
     private let captureRect: CGRect // AppKit screen coordinates
     private var frames: [CGImage] = []
-    private var scrollMonitor: Any?
-    private var debounceTimer: Timer?
+    private var captureTimer: Timer?
     private var onFrameAdded: ((Int) -> Void)?
     private var onComplete: (([CGImage]) -> Void)?
-    private var lastFrameTime: Date = .distantPast
 
-    // Minimum interval between captures to avoid near-duplicate frames
-    private let minCaptureInterval: TimeInterval = 0.3
-    // Debounce delay: wait for scrolling to stop before capturing
-    private let debounceDelay: TimeInterval = 0.2
+    // Interval between periodic captures
+    private let captureInterval: TimeInterval = 0.3
 
     init(rect: CGRect) {
         self.captureRect = rect
@@ -26,35 +22,17 @@ final class ScrollCaptureManager {
         // Capture initial frame
         captureFrame()
 
-        // Monitor scroll events globally
-        scrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            self?.handleScroll(event)
+        // Periodically capture frames — duplicate detection skips identical frames
+        captureTimer = Timer.scheduledTimer(withTimeInterval: captureInterval, repeats: true) { [weak self] _ in
+            self?.captureFrame()
         }
-
-        // Also monitor locally in case our app's windows receive the events
-        let localMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            self?.handleScroll(event)
-            return event
-        }
-        // Store local monitor too — use scrollMonitor as a tuple isn't clean, so store separately
-        _localMonitor = localMonitor
     }
 
-    private var _localMonitor: Any?
-
     func stop() {
-        if let monitor = scrollMonitor {
-            NSEvent.removeMonitor(monitor)
-            scrollMonitor = nil
-        }
-        if let monitor = _localMonitor {
-            NSEvent.removeMonitor(monitor)
-            _localMonitor = nil
-        }
-        debounceTimer?.invalidate()
-        debounceTimer = nil
+        captureTimer?.invalidate()
+        captureTimer = nil
 
-        // Capture one final frame in case the last scroll wasn't captured
+        // Capture one final frame
         captureFrame()
 
         onComplete?(frames)
@@ -62,28 +40,7 @@ final class ScrollCaptureManager {
         onComplete = nil
     }
 
-    private func handleScroll(_ event: NSEvent) {
-        // Only care about vertical scrolls
-        guard abs(event.scrollingDeltaY) > 0.5 else { return }
-
-        // Check if mouse is within our capture area
-        let mouseLocation = NSEvent.mouseLocation
-        // Expand the check area slightly to account for scrollbar interactions
-        let expandedRect = captureRect.insetBy(dx: -20, dy: -20)
-        guard expandedRect.contains(mouseLocation) else { return }
-
-        // Debounce: wait for scrolling to settle
-        debounceTimer?.invalidate()
-        debounceTimer = Timer.scheduledTimer(withTimeInterval: debounceDelay, repeats: false) { [weak self] _ in
-            self?.captureFrame()
-        }
-    }
-
     private func captureFrame() {
-        // Rate limit captures
-        let now = Date()
-        guard now.timeIntervalSince(lastFrameTime) >= minCaptureInterval else { return }
-
         guard let image = ScreenCaptureManager.capture(rect: captureRect) else { return }
 
         // Skip if this frame is nearly identical to the last one (no scroll happened)
@@ -92,7 +49,6 @@ final class ScrollCaptureManager {
         }
 
         frames.append(image)
-        lastFrameTime = now
         onFrameAdded?(frames.count)
     }
 

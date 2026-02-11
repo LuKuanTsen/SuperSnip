@@ -83,7 +83,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .scrollCapture:
             guard let rect = capturedRect else { return }
             dismissPreview()
-            startScrollCapture(rect: rect)
+            // Delay to let preview window fully disappear before first capture
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.startScrollCapture(rect: rect)
+            }
         }
     }
 
@@ -159,6 +162,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         scrollCaptureIndicator?.dismiss()
         scrollCaptureIndicator = nil
+        scrollCaptureManager?.stop()
         scrollCaptureManager = nil
         scrollCaptureBorderWindow?.orderOut(nil)
         scrollCaptureBorderWindow = nil
@@ -184,13 +188,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            // Stitch frames
-            let stitched: CGImage?
+            // Stitch frames with debug info
+            let (stitched, debugInfo): (CGImage?, StitchDebugInfo)
             if frames.count == 1 {
                 stitched = frames.first
+                debugInfo = StitchDebugInfo(pairs: [], validIndices: [0], validOverlaps: [], frameCount: 1)
             } else {
-                stitched = ImageStitcher.stitch(frames: frames)
+                (stitched, debugInfo) = ImageStitcher.stitchWithDebug(frames: frames)
             }
+
+            // Save debug output
+            let timestamp = ISO8601DateFormatter().string(from: Date())
+                .replacingOccurrences(of: ":", with: "-")
+            let debugDir = "/tmp/super-snip-debug/\(timestamp)"
+            ImageStitcher.saveDebug(frames: frames, result: stitched, debug: debugInfo, to: debugDir)
+            NSWorkspace.shared.open(URL(fileURLWithPath: debugDir))
+            print(debugInfo.log)
 
             guard let finalImage = stitched else {
                 self.scrollCaptureManager = nil
@@ -202,9 +215,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Show the result — copy to clipboard and show a preview
             ClipboardManager.copyToClipboard(finalImage)
 
-            // Show in a pin window so the user can see the result and save/copy
-            let displayHeight = min(CGFloat(finalImage.height) / 2, 600.0) // Cap display height
-            let displayWidth = CGFloat(finalImage.width) / 2
+            // Show in a pin window, scaling to fit screen while maintaining aspect ratio
+            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+            var displayWidth = CGFloat(finalImage.width) / scale
+            var displayHeight = CGFloat(finalImage.height) / scale
+            let maxDisplayHeight: CGFloat = 600.0
+            let maxDisplayWidth: CGFloat = 800.0
+
+            if displayHeight > maxDisplayHeight {
+                let ratio = maxDisplayHeight / displayHeight
+                displayHeight = maxDisplayHeight
+                displayWidth *= ratio
+            }
+            if displayWidth > maxDisplayWidth {
+                let ratio = maxDisplayWidth / displayWidth
+                displayWidth = maxDisplayWidth
+                displayHeight *= ratio
+            }
+
             let screenCenter = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080)
             let pinRect = CGRect(
                 x: screenCenter.midX - displayWidth / 2,

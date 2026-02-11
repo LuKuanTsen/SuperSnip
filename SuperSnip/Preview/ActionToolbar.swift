@@ -7,6 +7,7 @@ enum ToolbarAction {
     case pin
     case cancel
     case scrollCapture
+    case scrollCaptureDebug
 }
 
 struct ActionToolbar: View {
@@ -24,7 +25,7 @@ struct ActionToolbar: View {
             Divider().frame(height: 20)
 
             toolbarButton(icon: "pencil.and.outline", tooltip: "Edit", action: .edit)
-            toolbarButton(icon: "arrow.up.and.down.text.horizontal", tooltip: "Scroll Capture", action: .scrollCapture)
+            scrollCaptureButton()
 
             Divider().frame(height: 20)
 
@@ -34,6 +35,22 @@ struct ActionToolbar: View {
         .padding(.vertical, 4)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func scrollCaptureButton() -> some View {
+        Image(systemName: "arrow.up.and.down.text.horizontal")
+            .font(.system(size: 14))
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onAction(.scrollCapture)
+            }
+            .contextMenu {
+                Button("Debug Mode") {
+                    onAction(.scrollCaptureDebug)
+                }
+            }
+            .help("Scroll Capture (right-click for debug)")
     }
 
     private func toolbarButton(icon: String, tooltip: String, action: ToolbarAction) -> some View {

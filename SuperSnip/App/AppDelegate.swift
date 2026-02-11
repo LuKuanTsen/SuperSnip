@@ -16,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var scrollCaptureEscMonitor: Any?
     private var scrollCaptureRect: CGRect?
     private var scrollCaptureBorderWindow: NSPanel?
+    private var scrollCaptureDebugMode = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Request screen capture permission
@@ -97,8 +98,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dismissPreview()
         case .cancel:
             dismissPreview()
-        case .scrollCapture:
+        case .scrollCapture, .scrollCaptureDebug:
             guard let rect = capturedRect else { return }
+            scrollCaptureDebugMode = (action == .scrollCaptureDebug)
             dismissPreview()
             // Delay to let preview window fully disappear before first capture
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -214,13 +216,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 (stitched, debugInfo) = ImageStitcher.stitchWithDebug(frames: frames)
             }
 
-            // Save debug output
-            let timestamp = ISO8601DateFormatter().string(from: Date())
-                .replacingOccurrences(of: ":", with: "-")
-            let debugDir = "/tmp/super-snip-debug/\(timestamp)"
-            ImageStitcher.saveDebug(frames: frames, result: stitched, debug: debugInfo, to: debugDir)
-            NSWorkspace.shared.open(URL(fileURLWithPath: debugDir))
-            print(debugInfo.log)
+            // Save debug output only in debug mode
+            if self.scrollCaptureDebugMode {
+                let timestamp = ISO8601DateFormatter().string(from: Date())
+                    .replacingOccurrences(of: ":", with: "-")
+                let debugDir = "/tmp/super-snip-debug/\(timestamp)"
+                ImageStitcher.saveDebug(frames: frames, result: stitched, debug: debugInfo, to: debugDir)
+                NSWorkspace.shared.open(URL(fileURLWithPath: debugDir))
+                print(debugInfo.log)
+            }
 
             guard let finalImage = stitched else {
                 self.scrollCaptureManager = nil

@@ -3,7 +3,6 @@ import SwiftUI
 enum ToolbarAction {
     case copy
     case save
-    case edit
     case pin
     case cancel
     case scrollCapture
@@ -24,7 +23,6 @@ struct ActionToolbar: View {
 
             Divider().frame(height: 20)
 
-            toolbarButton(icon: "pencil.and.outline", tooltip: "Edit", action: .edit)
             scrollCaptureButton()
 
             Divider().frame(height: 20)

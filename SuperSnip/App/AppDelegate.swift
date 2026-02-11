@@ -83,9 +83,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let imageToSave = image
             dismissPreview()
             ImageExporter.saveWithDialog(imageToSave)
-        case .edit:
-            // Phase 3
-            break
         case .pin:
             if let rect = capturedRect {
                 let pin = PinWindow(image: image, frame: rect)
@@ -120,9 +117,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             pin.dismiss()
             pinWindows.removeAll { $0 === pin }
             ImageExporter.saveWithDialog(image)
-        case .edit:
-            // Phase 3
-            break
         case .close:
             pin.dismiss()
             pinWindows.removeAll { $0 === pin }

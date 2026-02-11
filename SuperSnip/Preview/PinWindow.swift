@@ -4,7 +4,6 @@ import SwiftUI
 enum PinAction {
     case copy
     case save
-    case edit
     case close
 }
 
@@ -373,10 +372,6 @@ struct PinToolbar: View {
         HStack(spacing: 2) {
             pinButton(icon: "doc.on.doc", tooltip: "Copy", action: .copy)
             pinButton(icon: "square.and.arrow.down", tooltip: "Save", action: .save)
-
-            Divider().frame(height: 20)
-
-            pinButton(icon: "pencil.and.outline", tooltip: "Edit", action: .edit)
 
             Divider().frame(height: 20)
 

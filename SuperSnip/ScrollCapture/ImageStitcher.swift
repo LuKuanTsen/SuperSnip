@@ -158,7 +158,14 @@ final class ImageStitcher {
 
     // MARK: - Overlap Detection
 
-    /// Find overlap and return both the overlap value and the best score.
+    /// Find overlap using 1D row-projection pre-filtering + full pixel verification.
+    ///
+    /// Algorithm:
+    /// 1. Compute a 1D "brightness profile" (one scalar per row) for both images.
+    /// 2. Use cheap 1D cross-correlation to find top N candidate overlap offsets.
+    /// 3. Run expensive full-pixel compareRows only on those candidates.
+    ///
+    /// This reduces complexity from O(H² × W) to O(H²) + O(N × H × W) where N ≈ 10.
     private static func findOverlapWithScore(top: CGImage, bottom: CGImage) -> (overlap: Int, score: Double) {
         guard top.width == bottom.width else { return (0, .infinity) }
         guard let topData = pixelData(for: top),
@@ -168,16 +175,50 @@ final class ImageStitcher {
         let topHeight = top.height
         let bottomHeight = bottom.height
 
-        let minOverlap = max(2, bottomHeight / 20)
-        let maxOverlap = bottomHeight * 97 / 100  // Search up to 97% overlap (jitter filter handles >95%)
+        let minOverlap = max(2, bottomHeight * 20 / 100)
+        let maxOverlap = bottomHeight * 97 / 100
         let searchMax = min(maxOverlap, topHeight - 1)
 
         guard minOverlap < searchMax else { return (0, .infinity) }
 
+        let bytesPerRow = width * 4
+        let xMargin = min(20, width / 10) * 4
+
+        // Step 1: Compute 1D brightness profile for each row
+        let topProfile = rowProfile(data: topData, height: topHeight, bytesPerRow: bytesPerRow, xMargin: xMargin)
+        let bottomProfile = rowProfile(data: bottomData, height: bottomHeight, bytesPerRow: bytesPerRow, xMargin: xMargin)
+
+        // Step 2: Find candidate offsets via 1D cross-correlation (very cheap — scalar ops only)
+        var candidates = [(overlap: Int, profileScore: Double)]()
+        candidates.reserveCapacity(searchMax - minOverlap + 1)
+
+        for overlap in stride(from: searchMax, through: minOverlap, by: -1) {
+            let topStart = topHeight - overlap
+            var sumSqDiff: Double = 0
+            for r in 0..<overlap {
+                let d = topProfile[topStart + r] - bottomProfile[r]
+                sumSqDiff += d * d
+            }
+            let profileScore = sqrt(sumSqDiff / Double(overlap))
+            candidates.append((overlap, profileScore))
+        }
+
+        // Step 3: Pick top N candidates (plus ±1 neighbors for sub-pixel robustness)
+        candidates.sort { $0.profileScore < $1.profileScore }
+        let topN = min(5, candidates.count)
+        var verifySet = Set<Int>()
+        for i in 0..<topN {
+            let ov = candidates[i].overlap
+            verifySet.insert(ov)
+            if ov > minOverlap { verifySet.insert(ov - 1) }
+            if ov < searchMax  { verifySet.insert(ov + 1) }
+        }
+
+        // Step 4: Full pixel verification only on selected candidates
         var bestOverlap = 0
         var bestScore = Double.infinity
 
-        for overlap in minOverlap...searchMax {
+        for overlap in verifySet {
             let score = compareRows(
                 topData: topData, topStartRow: topHeight - overlap,
                 bottomData: bottomData, bottomStartRow: 0,
@@ -190,10 +231,26 @@ final class ImageStitcher {
             }
         }
 
-        if bestScore > 35.0 {
-            return (0, bestScore)
+        if bestScore <= 35.0 {
+            return (bestOverlap, bestScore)
         }
-        return (bestOverlap, bestScore)
+        return (0, bestScore)
+    }
+
+    /// Compute average brightness per row — one scalar per row for fast 1D correlation.
+    private static func rowProfile(data: Data, height: Int, bytesPerRow: Int, xMargin: Int) -> [Double] {
+        var profile = [Double](repeating: 0, count: height)
+        for row in 0..<height {
+            let base = row * bytesPerRow
+            var sum: Int = 0
+            var count: Int = 0
+            for x in stride(from: xMargin, to: bytesPerRow - xMargin, by: 16) {
+                sum += Int(data[base + x]) + Int(data[base + x + 1]) + Int(data[base + x + 2])
+                count += 3
+            }
+            profile[row] = count > 0 ? Double(sum) / Double(count) : 0
+        }
+        return profile
     }
 
     private static func compareRows(
@@ -206,8 +263,8 @@ final class ImageStitcher {
         var totalDiff: Int = 0
         var sampleCount = 0
 
-        let rowCount = min(12, overlapHeight)
-        let step = max(1, overlapHeight / rowCount)
+        let rowCount = overlapHeight
+        let step = 1
         let xMargin = min(20, width / 10) * 4
 
         for i in 0..<rowCount {

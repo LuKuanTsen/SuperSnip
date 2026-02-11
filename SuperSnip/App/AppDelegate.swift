@@ -95,6 +95,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dismissPreview()
         case .cancel:
             dismissPreview()
+        case .draw:
+            previewWindow?.enterEditingMode(mode: .draw, image: image)
+        case .mosaic:
+            previewWindow?.enterEditingMode(mode: .mosaic, image: image)
+        case .undo:
+            previewWindow?.performUndo()
+        case .redo:
+            previewWindow?.performRedo()
         case .scrollCapture, .scrollCaptureDebug:
             guard let rect = capturedRect else { return }
             scrollCaptureDebugMode = (action == .scrollCaptureDebug)
@@ -312,6 +320,15 @@ extension AppDelegate: SelectionViewDelegate {
             let preview = CapturePreviewWindow(image: image, screenRect: rect)
             preview.onAction = { [weak self] action in
                 self?.handleToolbarAction(action)
+            }
+            preview.onImageEdited = { [weak self] editedImage in
+                guard let self else { return }
+                self.capturedImage = editedImage
+                // Update the preview image view
+                let nsImage = NSImage(cgImage: editedImage, size: NSSize(width: rect.width, height: rect.height))
+                if let imageView = self.previewWindow?.contentView as? NSImageView {
+                    imageView.image = nsImage
+                }
             }
             preview.makeKeyAndOrderFront(nil)
             self.previewWindow = preview

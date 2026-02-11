@@ -165,7 +165,9 @@ final class PinWindow: NSPanel {
         // Synchronous event tracking loop — smoothest possible resize
         var keepRunning = true
         while keepRunning {
-            guard let event = self.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { continue }
+            guard let event = self.nextEvent(matching: [.leftMouseDragged, .leftMouseUp],
+                                             until: .distantFuture, inMode: .eventTracking, dequeue: true)
+            else { break }  // nil = lost focus or app deactivation, stop resize
             switch event.type {
             case .leftMouseDragged:
                 let currentMouse = NSEvent.mouseLocation

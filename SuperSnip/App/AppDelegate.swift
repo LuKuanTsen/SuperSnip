@@ -48,7 +48,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         for screen in NSScreen.screens {
             let overlay = OverlayWindow(screen: screen)
-            let selectionView = overlay.contentView as! SelectionView
+            guard let selectionView = overlay.contentView as? SelectionView else { continue }
             selectionView.coordinator = coordinator
             coordinator.views.append(selectionView)
             overlay.makeKeyAndOrderFront(nil)

@@ -7,8 +7,8 @@ final class ScrollCaptureManager {
     private var onFrameAdded: ((Int) -> Void)?
     private var onComplete: (([CGImage]) -> Void)?
 
-    // Interval between periodic captures
     private let captureInterval: TimeInterval = 0.3
+    private let maxFrames = 100
 
     init(rect: CGRect) {
         self.captureRect = rect
@@ -50,6 +50,10 @@ final class ScrollCaptureManager {
 
         frames.append(image)
         onFrameAdded?(frames.count)
+
+        if frames.count >= maxFrames {
+            stop()
+        }
     }
 
     /// Quick check: compare a few sample rows to see if two frames are nearly identical.

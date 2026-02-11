@@ -37,94 +37,90 @@ final class ImageStitcher {
 
     private static let scaleFactor = 4
 
-    /// Stitch frames and return debug info alongside the result.
+    /// Stitch frames using accumulated image comparison.
+    ///
+    /// Each new frame is compared against the accumulated result (thumbnail), not just
+    /// the previous frame. This handles scroll bounce-back and page rebound:
+    /// - If the new frame extends beyond the accumulated image → accept (forward scroll)
+    /// - If the new frame is entirely within the accumulated image → skip (bounce back)
     static func stitchWithDebug(frames: [CGImage]) -> (image: CGImage?, debug: StitchDebugInfo) {
         let emptyDebug = StitchDebugInfo(pairs: [], validIndices: [0], validOverlaps: [], frameCount: frames.count)
         guard !frames.isEmpty else { return (nil, emptyDebug) }
         guard frames.count >= 2 else { return (frames.first, emptyDebug) }
 
-        // Step 1: Create thumbnails
         let thumbs = frames.map { downscale($0, by: scaleFactor) }
 
-        // Step 2: Find overlaps, collect debug info
-        // Skip frames with no valid overlap (instead of concatenating, which duplicates content).
-        // The next frame will be compared against the last valid frame.
         var validIndices = [0]
         var validOverlaps = [Int]()
-        var lastValidIdx = 0
         var pairInfos = [StitchDebugInfo.PairInfo]()
-        let maxBacktrack = 5 // How many earlier valid frames to try on failure
+
+        // Accumulated thumbnail — the stitched result so far at thumbnail scale.
+        // We only keep the bottom portion (max 3× frame height) for bounded performance.
+        guard var accThumb = thumbs[0] else { return (frames.first, emptyDebug) }
+        let frameThumbHeight = accThumb.height
 
         for i in 1..<frames.count {
-            guard let bottom = thumbs[i] else {
+            guard let newThumb = thumbs[i] else {
                 pairInfos.append(.init(
-                    frameIndex: i, comparedAgainst: lastValidIdx,
+                    frameIndex: i, comparedAgainst: -1,
                     thumbOverlap: 0, fullOverlap: 0, bestScore: .infinity,
                     decision: "skipped (thumbnail failed)"
                 ))
                 continue
             }
 
-            // Try matching against recent valid frames, newest first.
-            // If the best match is an earlier frame, intermediate frames were bounce artifacts.
-            var matchedValidPos = -1 // position in validIndices
-            var matchedOverlap = 0
-            var matchedScore = Double.infinity
-            var triedAgainst = lastValidIdx
+            let (matchY, newContentRows, score) = findPositionInAccumulated(
+                accumulated: accThumb, newFrame: newThumb
+            )
 
-            let searchStart = validIndices.count - 1
-            let searchEnd = max(0, validIndices.count - maxBacktrack)
-
-            for j in stride(from: searchStart, through: searchEnd, by: -1) {
-                let refIdx = validIndices[j]
-                guard let top = thumbs[refIdx] else { continue }
-
-                let (thumbOverlap, bestScore) = findOverlapWithScore(top: top, bottom: bottom)
-                if thumbOverlap > 0 {
-                    matchedValidPos = j
-                    matchedOverlap = thumbOverlap
-                    matchedScore = bestScore
-                    triedAgainst = refIdx
-                    break // Take the most recent match
-                }
-
-                // Track the first (most recent) frame we tried for debug logging
-                if j == searchStart { triedAgainst = refIdx }
+            if matchY < 0 {
+                // No match at all
+                pairInfos.append(.init(
+                    frameIndex: i, comparedAgainst: -1,
+                    thumbOverlap: 0, fullOverlap: 0, bestScore: score,
+                    decision: "skipped (no match in accumulated)"
+                ))
+                continue
             }
 
-            if matchedValidPos >= 0 {
-                let refIdx = validIndices[matchedValidPos]
-                let fullOverlap = matchedOverlap * scaleFactor
-                let pct = fullOverlap * 100 / frames[i].height
-
-                // If matched against an earlier frame, discard intermediate bounce frames
-                if matchedValidPos < validIndices.count - 1 {
-                    let discarded = validIndices.count - 1 - matchedValidPos
-                    validIndices = Array(validIndices.prefix(matchedValidPos + 1))
-                    validOverlaps = Array(validOverlaps.prefix(matchedValidPos))
-                    pairInfos.append(.init(
-                        frameIndex: i, comparedAgainst: refIdx,
-                        thumbOverlap: matchedOverlap, fullOverlap: fullOverlap, bestScore: matchedScore,
-                        decision: "kept (overlap \(pct)%, backtracked, discarded \(discarded) bounce frames)"
-                    ))
-                } else {
-                    pairInfos.append(.init(
-                        frameIndex: i, comparedAgainst: refIdx,
-                        thumbOverlap: matchedOverlap, fullOverlap: fullOverlap, bestScore: matchedScore,
-                        decision: "kept (overlap \(pct)%)"
-                    ))
-                }
-
-                validIndices.append(i)
-                validOverlaps.append(fullOverlap)
-                lastValidIdx = i
-            } else {
-                // No match against any recent valid frame — skip
+            // Require at least 3% new content to avoid accepting near-duplicates
+            let minNewContent = max(2, newThumb.height * 3 / 100)
+            if newContentRows < minNewContent {
                 pairInfos.append(.init(
-                    frameIndex: i, comparedAgainst: triedAgainst,
-                    thumbOverlap: 0, fullOverlap: 0, bestScore: matchedScore,
-                    decision: "skipped (no overlap against last \(min(maxBacktrack, validIndices.count)) valid frames)"
+                    frameIndex: i, comparedAgainst: -1,
+                    thumbOverlap: newThumb.height - newContentRows, fullOverlap: 0,
+                    bestScore: score,
+                    decision: "skipped (bounce back, \(newContentRows)px new < \(minNewContent)px min)"
                 ))
+                continue
+            }
+
+            // Accept frame — it has new content
+            let fullNewContent = newContentRows * scaleFactor
+            let fullOverlap = frames[i].height - fullNewContent
+            let pct = fullOverlap * 100 / frames[i].height
+
+            pairInfos.append(.init(
+                frameIndex: i, comparedAgainst: -1,
+                thumbOverlap: newThumb.height - newContentRows, fullOverlap: fullOverlap,
+                bestScore: score,
+                decision: "kept (overlap \(pct)%, +\(fullNewContent)px new)"
+            ))
+
+            validIndices.append(i)
+            validOverlaps.append(fullOverlap)
+
+            // Extend accumulated thumbnail with new content
+            if let extended = extendAccumulated(accThumb, with: newThumb, newContentRows: newContentRows) {
+                accThumb = extended
+            }
+
+            // Crop if too tall to keep comparison cost bounded
+            let maxAccHeight = frameThumbHeight * 3
+            if accThumb.height > maxAccHeight {
+                if let cropped = cropBottom(accThumb, rows: frameThumbHeight * 2) {
+                    accThumb = cropped
+                }
             }
         }
 
@@ -313,6 +309,126 @@ final class ImageStitcher {
         }
 
         return sampleCount > 0 ? Double(totalDiff) / Double(sampleCount) : Double.infinity
+    }
+
+    // MARK: - Accumulated Image Matching
+
+    /// Find where the new frame's top aligns within the accumulated thumbnail.
+    ///
+    /// Returns (matchY, newContentRows, score):
+    ///   - matchY: row in accumulated where new frame's top aligns (-1 if no match)
+    ///   - newContentRows: rows of new frame extending beyond accumulated bottom
+    ///   - score: pixel comparison score
+    private static func findPositionInAccumulated(
+        accumulated: CGImage, newFrame: CGImage
+    ) -> (matchY: Int, newContentRows: Int, score: Double) {
+        guard accumulated.width == newFrame.width else { return (-1, 0, .infinity) }
+        guard let accData = pixelData(for: accumulated),
+              let newData = pixelData(for: newFrame) else { return (-1, 0, .infinity) }
+
+        let width = accumulated.width
+        let accHeight = accumulated.height
+        let frameHeight = newFrame.height
+
+        let minOverlap = max(2, frameHeight * 20 / 100)
+        let bytesPerRow = width * 4
+        let xMargin = min(20, width / 10) * 4
+
+        // Search range for matchY (where new frame's top row aligns in accumulated)
+        let searchMin = max(0, accHeight - frameHeight * 2)
+        let searchMax = accHeight - minOverlap
+
+        guard searchMin <= searchMax else { return (-1, 0, .infinity) }
+
+        // Step 1: Compute row profiles
+        let accProfile = rowProfile(data: accData, height: accHeight, bytesPerRow: bytesPerRow, xMargin: xMargin)
+        let newProfile = rowProfile(data: newData, height: frameHeight, bytesPerRow: bytesPerRow, xMargin: xMargin)
+
+        // Step 2: 1D cross-correlation to find candidate positions
+        var candidates = [(matchY: Int, profileScore: Double)]()
+        candidates.reserveCapacity(searchMax - searchMin + 1)
+
+        for matchY in searchMin...searchMax {
+            let compareLen = min(frameHeight, accHeight - matchY)
+            var sumSqDiff: Double = 0
+            for r in 0..<compareLen {
+                let d = accProfile[matchY + r] - newProfile[r]
+                sumSqDiff += d * d
+            }
+            let profileScore = sqrt(sumSqDiff / Double(compareLen))
+            candidates.append((matchY, profileScore))
+        }
+
+        // Step 3: Pick top N candidates with ±1 neighbors
+        candidates.sort { $0.profileScore < $1.profileScore }
+        let topN = min(5, candidates.count)
+        var verifySet = Set<Int>()
+        for i in 0..<topN {
+            let y = candidates[i].matchY
+            verifySet.insert(y)
+            if y > searchMin { verifySet.insert(y - 1) }
+            if y < searchMax { verifySet.insert(y + 1) }
+        }
+
+        // Step 4: Full pixel verification on candidates
+        var bestMatchY = -1
+        var bestScore = Double.infinity
+
+        for matchY in verifySet {
+            let compareLen = min(frameHeight, accHeight - matchY)
+            let score = compareRows(
+                topData: accData, topStartRow: matchY,
+                bottomData: newData, bottomStartRow: 0,
+                width: width, overlapHeight: compareLen,
+                totalTopHeight: accHeight, totalBottomHeight: frameHeight
+            )
+            if score < bestScore {
+                bestScore = score
+                bestMatchY = matchY
+            }
+        }
+
+        if bestScore <= 35.0 && bestMatchY >= 0 {
+            let newContentRows = max(0, bestMatchY + frameHeight - accHeight)
+            return (bestMatchY, newContentRows, bestScore)
+        }
+
+        return (-1, 0, bestScore)
+    }
+
+    /// Extend the accumulated thumbnail by appending new content rows from the new frame.
+    private static func extendAccumulated(
+        _ accumulated: CGImage, with newFrame: CGImage, newContentRows: Int
+    ) -> CGImage? {
+        guard newContentRows > 0 else { return accumulated }
+        let width = accumulated.width
+        let newHeight = accumulated.height + newContentRows
+
+        guard let ctx = CGContext(
+            data: nil, width: width, height: newHeight,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        // Draw accumulated at top (CG coords: y = newContentRows since CG origin is bottom-left)
+        ctx.draw(accumulated, in: CGRect(x: 0, y: newContentRows, width: width, height: accumulated.height))
+
+        // Crop bottom newContentRows from newFrame
+        // In CGImage pixel coords (top-left origin), bottom rows start at y = height - newContentRows
+        let cropRect = CGRect(x: 0, y: newFrame.height - newContentRows, width: newFrame.width, height: newContentRows)
+        if let croppedNew = newFrame.cropping(to: cropRect) {
+            ctx.draw(croppedNew, in: CGRect(x: 0, y: 0, width: width, height: newContentRows))
+        }
+
+        return ctx.makeImage()
+    }
+
+    /// Crop the bottom N rows from an image.
+    private static func cropBottom(_ image: CGImage, rows: Int) -> CGImage? {
+        let cropRows = min(rows, image.height)
+        // CGImage pixel coords: top-left origin, so bottom rows start at y = height - rows
+        return image.cropping(to: CGRect(x: 0, y: image.height - cropRows, width: image.width, height: cropRows))
     }
 
     // MARK: - Image Utilities

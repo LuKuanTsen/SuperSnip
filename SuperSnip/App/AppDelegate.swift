@@ -3,7 +3,8 @@ import Carbon
 import Combine
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    private var overlayWindow: OverlayWindow?
+    private var overlayWindows: [OverlayWindow] = []
+    private var selectionCoordinator: SelectionCoordinator?
     private var previewWindow: CapturePreviewWindow?
     private var capturedImage: CGImage?
     private var capturedRect: CGRect?
@@ -38,12 +39,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Dismiss any existing overlay/preview/scroll capture
         dismissPreview()
         stopScrollCapture()
-        overlayWindow?.orderOut(nil)
+        dismissOverlays()
 
-        let overlay = OverlayWindow()
-        overlay.setSelectionDelegate(self)
-        overlay.makeKeyAndOrderFront(nil)
-        self.overlayWindow = overlay
+        let coordinator = SelectionCoordinator()
+        coordinator.delegate = self
+        self.selectionCoordinator = coordinator
+
+        for screen in NSScreen.screens {
+            let overlay = OverlayWindow(screen: screen)
+            let selectionView = overlay.contentView as! SelectionView
+            selectionView.coordinator = coordinator
+            coordinator.views.append(selectionView)
+            overlay.makeKeyAndOrderFront(nil)
+            overlayWindows.append(overlay)
+        }
+    }
+
+    private func dismissOverlays() {
+        for overlay in overlayWindows {
+            overlay.orderOut(nil)
+        }
+        overlayWindows.removeAll()
+        selectionCoordinator = nil
     }
 
     private func dismissPreview() {
@@ -251,8 +268,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showScrollCaptureBorder(rect: CGRect) {
+        let gap: CGFloat = 3  // gap between capture area and border
+        let borderWidth: CGFloat = 2
+        let outset = gap + borderWidth
         let borderWindow = NSPanel(
-            contentRect: rect.insetBy(dx: -2, dy: -2),
+            contentRect: rect.insetBy(dx: -outset, dy: -outset),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -263,11 +283,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         borderWindow.ignoresMouseEvents = true
         borderWindow.hasShadow = false
 
-        let borderView = NSView(frame: NSRect(origin: .zero, size: rect.insetBy(dx: -2, dy: -2).size))
+        let borderView = NSView(frame: NSRect(origin: .zero, size: rect.insetBy(dx: -outset, dy: -outset).size))
         borderView.wantsLayer = true
         borderView.layer?.borderColor = NSColor.systemOrange.cgColor
-        borderView.layer?.borderWidth = 2
-        borderView.layer?.cornerRadius = 2
+        borderView.layer?.borderWidth = borderWidth
+        borderView.layer?.cornerRadius = 3
         borderWindow.contentView = borderView
 
         borderWindow.orderFront(nil)
@@ -279,8 +299,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: SelectionViewDelegate {
     func selectionDidComplete(rect: CGRect) {
-        overlayWindow?.orderOut(nil)
-        overlayWindow = nil
+        dismissOverlays()
 
         // Wait for the overlay to be fully removed from screen before capturing
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -302,7 +321,6 @@ extension AppDelegate: SelectionViewDelegate {
     }
 
     func selectionDidCancel() {
-        overlayWindow?.orderOut(nil)
-        overlayWindow = nil
+        dismissOverlays()
     }
 }

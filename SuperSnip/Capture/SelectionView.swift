@@ -5,12 +5,16 @@ protocol SelectionViewDelegate: AnyObject {
     func selectionDidCancel()
 }
 
-final class SelectionView: NSView {
+/// Coordinates selection state across multiple overlay windows (one per screen).
+/// All coordinates are in global screen coordinates (AppKit: origin at bottom-left of main screen).
+final class SelectionCoordinator {
     weak var delegate: SelectionViewDelegate?
+    var views: [SelectionView] = []
 
-    private var startPoint: CGPoint?
-    private var currentPoint: CGPoint?
-    private var selectionRect: CGRect? {
+    private var startPoint: CGPoint?  // screen coordinates
+    private var currentPoint: CGPoint?  // screen coordinates
+
+    var selectionRect: CGRect? {
         guard let start = startPoint, let current = currentPoint else { return nil }
         return CGRect(
             x: min(start.x, current.x),
@@ -20,71 +24,107 @@ final class SelectionView: NSView {
         )
     }
 
+    func mouseDown(screenPoint: CGPoint) {
+        startPoint = screenPoint
+        currentPoint = screenPoint
+        redrawAll()
+    }
+
+    func mouseDragged(screenPoint: CGPoint) {
+        currentPoint = screenPoint
+        redrawAll()
+    }
+
+    func mouseUp(screenPoint: CGPoint) {
+        currentPoint = screenPoint
+        guard let rect = selectionRect, rect.width > 5, rect.height > 5 else {
+            delegate?.selectionDidCancel()
+            return
+        }
+        delegate?.selectionDidComplete(rect: rect)
+    }
+
+    func cancel() {
+        delegate?.selectionDidCancel()
+    }
+
+    private func redrawAll() {
+        for view in views {
+            view.needsDisplay = true
+        }
+    }
+}
+
+final class SelectionView: NSView {
+    weak var coordinator: SelectionCoordinator?
+
     override var acceptsFirstResponder: Bool { true }
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .crosshair)
     }
 
+    // MARK: - Mouse Events (convert to screen coordinates)
+
+    private func screenPoint(for event: NSEvent) -> CGPoint {
+        let windowPoint = event.locationInWindow
+        return window?.convertPoint(toScreen: windowPoint) ?? windowPoint
+    }
+
     override func mouseDown(with event: NSEvent) {
-        startPoint = convert(event.locationInWindow, from: nil)
-        currentPoint = startPoint
-        needsDisplay = true
+        coordinator?.mouseDown(screenPoint: screenPoint(for: event))
     }
 
     override func mouseDragged(with event: NSEvent) {
-        currentPoint = convert(event.locationInWindow, from: nil)
-        needsDisplay = true
+        coordinator?.mouseDragged(screenPoint: screenPoint(for: event))
     }
 
     override func mouseUp(with event: NSEvent) {
-        currentPoint = convert(event.locationInWindow, from: nil)
-        guard let rect = selectionRect, rect.width > 5, rect.height > 5 else {
-            delegate?.selectionDidCancel()
-            return
-        }
-        // Convert view coordinates to screen coordinates
-        guard let windowFrame = window?.frame else { return }
-        let screenRect = CGRect(
-            x: windowFrame.origin.x + rect.origin.x,
-            y: windowFrame.origin.y + rect.origin.y,
-            width: rect.width,
-            height: rect.height
-        )
-        delegate?.selectionDidComplete(rect: screenRect)
+        coordinator?.mouseUp(screenPoint: screenPoint(for: event))
     }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { // ESC
-            delegate?.selectionDidCancel()
+            coordinator?.cancel()
         }
+    }
+
+    // MARK: - Drawing
+
+    /// Convert a rect from screen coordinates to this view's local coordinates.
+    private func localRect(from screenRect: CGRect) -> CGRect {
+        guard let window = self.window else { return screenRect }
+        let windowRect = window.convertFromScreen(screenRect)
+        return convert(windowRect, from: nil)
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        // Draw dark overlay
         NSColor.black.withAlphaComponent(0.3).setFill()
-        if let sel = selectionRect {
+
+        if let globalSel = coordinator?.selectionRect {
+            let sel = localRect(from: globalSel)
+
             // Draw overlay with a transparent hole for the selection
             let fullPath = NSBezierPath(rect: bounds)
             fullPath.windingRule = .evenOdd
-            fullPath.append(NSBezierPath(rect: sel))
+            let visibleSel = sel.intersection(bounds)
+            if !visibleSel.isNull {
+                fullPath.append(NSBezierPath(rect: visibleSel))
+            }
             fullPath.fill()
 
-            // Draw selection border
+            // Draw selection border (clipped to this view)
             NSColor.systemBlue.setStroke()
             let borderPath = NSBezierPath(rect: sel)
             borderPath.lineWidth = 1.5
             borderPath.stroke()
 
-            // Draw corner and edge handles
+            // Draw handles and label
             drawHandles(for: sel)
-
-            // Draw dimension label
-            drawDimensionLabel(for: sel)
+            drawDimensionLabel(for: sel, globalRect: globalSel)
         } else {
-            // No selection yet — full dark overlay
             NSBezierPath(rect: bounds).fill()
         }
     }
@@ -103,6 +143,9 @@ final class SelectionView: NSView {
         ]
 
         for point in points {
+            // Only draw if this handle is within or near our bounds
+            guard bounds.insetBy(dx: -handleSize, dy: -handleSize).contains(point) else { continue }
+
             let handleRect = CGRect(
                 x: point.x - handleSize / 2,
                 y: point.y - handleSize / 2,
@@ -118,8 +161,9 @@ final class SelectionView: NSView {
         }
     }
 
-    private func drawDimensionLabel(for rect: CGRect) {
-        let text = "\(Int(rect.width)) \u{00D7} \(Int(rect.height)) pt"
+    private func drawDimensionLabel(for rect: CGRect, globalRect: CGRect) {
+        // Use global rect dimensions for the label text
+        let text = "\(Int(globalRect.width)) \u{00D7} \(Int(globalRect.height)) pt"
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor.white,
@@ -132,6 +176,10 @@ final class SelectionView: NSView {
             width: size.width + padding * 2,
             height: size.height + padding
         )
+
+        // Only draw if the label is visible on this screen
+        guard bounds.intersects(bgRect) else { return }
+
         NSColor.black.withAlphaComponent(0.75).setFill()
         NSBezierPath(roundedRect: bgRect, xRadius: 4, yRadius: 4).fill()
         (text as NSString).draw(

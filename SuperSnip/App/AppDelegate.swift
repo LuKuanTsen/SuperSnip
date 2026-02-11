@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import Combine
+import UniformTypeIdentifiers
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -15,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var scrollCaptureManager: ScrollCaptureManager?
     private var scrollCaptureIndicator: ScrollCaptureIndicator?
     private var scrollCaptureEscMonitor: Any?
+    private var scrollCaptureGlobalEscMonitor: Any?
     private var scrollCaptureRect: CGRect?
     private var scrollCaptureBorderWindow: NSPanel?
     private var scrollCaptureDebugMode = false
@@ -23,6 +25,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var gifRecordingManager: GifRecordingManager?
     private var recordingIndicator: RecordingIndicator?
     private var recordingEscMonitor: Any?
+    private var recordingGlobalEscMonitor: Any?
 
     static func main() {
         let app = NSApplication.shared
@@ -47,6 +50,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         )
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        HotkeyManager.shared.unregister()
+        stopScrollCapture()
+        stopGifRecording()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            startCapture()
+        }
+        return true
     }
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
@@ -155,7 +171,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let gifData = pin.gifData {
                 let pasteboard = NSPasteboard.general
                 pasteboard.clearContents()
-                pasteboard.setData(gifData, forType: NSPasteboard.PasteboardType("com.compuserve.gif"))
+                pasteboard.setData(gifData, forType: NSPasteboard.PasteboardType(UTType.gif.identifier))
             } else {
                 ClipboardManager.copyToClipboard(image)
             }
@@ -243,6 +259,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return event
         }
+        scrollCaptureGlobalEscMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 {
+                self?.finishScrollCapture()
+            }
+        }
     }
 
     private func finishScrollCapture() {
@@ -254,6 +275,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let monitor = scrollCaptureEscMonitor {
             NSEvent.removeMonitor(monitor)
             scrollCaptureEscMonitor = nil
+        }
+        if let monitor = scrollCaptureGlobalEscMonitor {
+            NSEvent.removeMonitor(monitor)
+            scrollCaptureGlobalEscMonitor = nil
         }
         scrollCaptureIndicator?.dismiss()
         scrollCaptureIndicator = nil
@@ -272,6 +297,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let monitor = self.scrollCaptureEscMonitor {
                 NSEvent.removeMonitor(monitor)
                 self.scrollCaptureEscMonitor = nil
+            }
+            if let monitor = self.scrollCaptureGlobalEscMonitor {
+                NSEvent.removeMonitor(monitor)
+                self.scrollCaptureGlobalEscMonitor = nil
             }
             self.scrollCaptureIndicator?.dismiss()
             self.scrollCaptureIndicator = nil
@@ -314,28 +343,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Show in a pin window, scaling to fit screen while maintaining aspect ratio
             let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-            var displayWidth = CGFloat(finalImage.width) / scale
-            var displayHeight = CGFloat(finalImage.height) / scale
-            let maxDisplayHeight: CGFloat = 600.0
-            let maxDisplayWidth: CGFloat = 800.0
-
-            if displayHeight > maxDisplayHeight {
-                let ratio = maxDisplayHeight / displayHeight
-                displayHeight = maxDisplayHeight
-                displayWidth *= ratio
-            }
-            if displayWidth > maxDisplayWidth {
-                let ratio = maxDisplayWidth / displayWidth
-                displayWidth = maxDisplayWidth
-                displayHeight *= ratio
-            }
-
-            let screenCenter = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080)
-            let pinRect = CGRect(
-                x: screenCenter.midX - displayWidth / 2,
-                y: screenCenter.midY - displayHeight / 2,
-                width: displayWidth,
-                height: displayHeight
+            let pinRect = self.centeredPinRect(
+                pointWidth: CGFloat(finalImage.width) / scale,
+                pointHeight: CGFloat(finalImage.height) / scale
             )
 
             let pin = PinWindow(image: finalImage, frame: pinRect)
@@ -386,13 +396,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
 
-        // ESC monitor
+        // ESC monitor (local + global, since user may be in another app)
         recordingEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 {
                 self?.finishGifRecording()
                 return nil
             }
             return event
+        }
+        recordingGlobalEscMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 {
+                self?.finishGifRecording()
+            }
         }
     }
 
@@ -407,6 +422,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let monitor = recordingEscMonitor {
             NSEvent.removeMonitor(monitor)
             recordingEscMonitor = nil
+        }
+        if let monitor = recordingGlobalEscMonitor {
+            NSEvent.removeMonitor(monitor)
+            recordingGlobalEscMonitor = nil
         }
         recordingIndicator?.dismiss()
         recordingIndicator = nil
@@ -426,6 +445,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let monitor = self.recordingEscMonitor {
                 NSEvent.removeMonitor(monitor)
                 self.recordingEscMonitor = nil
+            }
+            if let monitor = self.recordingGlobalEscMonitor {
+                NSEvent.removeMonitor(monitor)
+                self.recordingGlobalEscMonitor = nil
             }
             self.recordingIndicator?.dismiss()
             self.recordingIndicator = nil
@@ -448,32 +471,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Copy GIF data to clipboard
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
-            pasteboard.setData(gifData, forType: NSPasteboard.PasteboardType("com.compuserve.gif"))
+            pasteboard.setData(gifData, forType: NSPasteboard.PasteboardType(UTType.gif.identifier))
 
             // Show first frame in a pin window (frames are already 1x point size)
             let firstFrame = frames[0]
-            var displayWidth = CGFloat(firstFrame.width)
-            var displayHeight = CGFloat(firstFrame.height)
-            let maxDisplayHeight: CGFloat = 600.0
-            let maxDisplayWidth: CGFloat = 800.0
-
-            if displayHeight > maxDisplayHeight {
-                let ratio = maxDisplayHeight / displayHeight
-                displayHeight = maxDisplayHeight
-                displayWidth *= ratio
-            }
-            if displayWidth > maxDisplayWidth {
-                let ratio = maxDisplayWidth / displayWidth
-                displayWidth = maxDisplayWidth
-                displayHeight *= ratio
-            }
-
-            let screenCenter = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080)
-            let pinRect = CGRect(
-                x: screenCenter.midX - displayWidth / 2,
-                y: screenCenter.midY - displayHeight / 2,
-                width: displayWidth,
-                height: displayHeight
+            let pinRect = self.centeredPinRect(
+                pointWidth: CGFloat(firstFrame.width),
+                pointHeight: CGFloat(firstFrame.height)
             )
 
             let pin = PinWindow(image: firstFrame, frame: pinRect)
@@ -484,6 +488,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             pin.makeKeyAndOrderFront(nil)
             self.pinWindows.append(pin)
         }
+    }
+
+    /// Compute a centered pin window rect that fits within max display bounds.
+    /// `pointWidth`/`pointHeight` should already be in point dimensions (not pixels).
+    private func centeredPinRect(pointWidth: CGFloat, pointHeight: CGFloat) -> CGRect {
+        var w = pointWidth
+        var h = pointHeight
+        let maxH: CGFloat = 600, maxW: CGFloat = 800
+
+        if h > maxH { let r = maxH / h; h = maxH; w *= r }
+        if w > maxW { let r = maxW / w; w = maxW; h *= r }
+
+        let screen = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        return CGRect(x: screen.midX - w / 2, y: screen.midY - h / 2, width: w, height: h)
     }
 
     private func showScrollCaptureBorder(rect: CGRect) {

@@ -56,14 +56,12 @@ final class GifRecordingManager {
         }
     }
 
-    /// Called on captureQueue. Captures and downscales to 1x for smaller GIF.
+    /// Called on captureQueue. Captures at full resolution with cursor.
     private func captureFrame(maxFrames: Int) {
         guard !isStopped else { return }
-        guard let image = ScreenCaptureManager.capture(rect: captureRect) else { return }
+        guard let image = ScreenCaptureManager.capture(rect: captureRect, includeCursor: true) else { return }
 
-        // Downscale Retina (2x) capture to 1x point size for smaller GIF
-        let scaled = downscale(image)
-        frames.append(scaled)
+        frames.append(image)
         let count = frames.count
 
         DispatchQueue.main.async { [weak self] in
@@ -75,24 +73,4 @@ final class GifRecordingManager {
         }
     }
 
-    /// Downscale to 1x point size (half the pixel dimensions on Retina).
-    private func downscale(_ image: CGImage) -> CGImage {
-        let targetWidth = image.width / 2
-        let targetHeight = image.height / 2
-        guard targetWidth > 0, targetHeight > 0 else { return image }
-
-        guard let ctx = CGContext(
-            data: nil,
-            width: targetWidth,
-            height: targetHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return image }
-
-        ctx.interpolationQuality = .high
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
-        return ctx.makeImage() ?? image
-    }
 }

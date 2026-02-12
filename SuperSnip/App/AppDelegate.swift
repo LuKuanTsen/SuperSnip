@@ -7,9 +7,6 @@ import UniformTypeIdentifiers
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlayWindows: [OverlayWindow] = []
     private var selectionCoordinator: SelectionCoordinator?
-    private var previewWindow: CapturePreviewWindow?
-    private var capturedImage: CGImage?
-    private var capturedRect: CGRect?
     private var pinWindows: [PinWindow] = []
 
     // Scroll capture
@@ -76,8 +73,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func startCapture() {
-        // Dismiss any existing overlay/preview/scroll capture/gif recording
-        dismissPreview()
+        // Stop any ongoing scroll capture/GIF recording and dismiss overlays
         stopScrollCapture()
         stopGifRecording()
         dismissOverlays()
@@ -104,119 +100,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         selectionCoordinator = nil
     }
 
-    private func dismissPreview() {
-        previewWindow?.dismiss()
-        previewWindow = nil
-        capturedImage = nil
-        capturedRect = nil
-    }
-
-    // MARK: - Toolbar Actions
-
-    private func handleToolbarAction(_ action: ToolbarAction) {
-        guard let image = capturedImage else { return }
-        switch action {
-        case .copy:
-            ClipboardManager.copyToClipboard(image)
-            dismissPreview()
-        case .save:
-            let imageToSave = image
-            guard let window = previewWindow else { return }
-            ImageExporter.saveAsSheet(imageToSave, from: window) { [weak self] in
-                self?.dismissPreview()
-            }
-        case .pin:
-            if let rect = capturedRect {
-                let pin = PinWindow(image: image, frame: rect)
-                pin.onAction = { [weak self] action, pinWin in
-                    self?.handlePinAction(action, pin: pinWin)
-                }
-                pin.makeKeyAndOrderFront(nil)
-                pinWindows.append(pin)
-            }
-            dismissPreview()
-        case .cancel:
-            dismissPreview()
-        case .draw:
-            previewWindow?.enterEditingMode(mode: .draw, image: image)
-        case .mosaic:
-            previewWindow?.enterEditingMode(mode: .mosaic, image: image)
-        case .undo:
-            previewWindow?.performUndo()
-        case .redo:
-            previewWindow?.performRedo()
-        case .recordGif:
-            guard let rect = capturedRect else { return }
-            dismissPreview()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.startGifRecording(rect: rect)
-            }
-        case .scrollCapture, .scrollCaptureDebug:
-            guard let rect = capturedRect else { return }
-            scrollCaptureDebugMode = (action == .scrollCaptureDebug)
-            dismissPreview()
-            // Delay to let preview window fully disappear before first capture
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.startScrollCapture(rect: rect)
-            }
-        }
-    }
-
     // MARK: - Pin Actions
 
     private func handlePinAction(_ action: PinAction, pin: PinWindow) {
-        let image = pin.pinnedImage
         switch action {
         case .copy:
             if let gifData = pin.gifData {
                 copyGifToClipboard(gifData)
             } else {
-                ClipboardManager.copyToClipboard(image)
+                ClipboardManager.copyToClipboard(pin.currentImage)
             }
         case .save:
-            let gifData = pin.gifData
-            let completion: () -> Void = { [weak self] in
-                pin.dismiss()
-                self?.pinWindows.removeAll { $0 === pin }
-            }
-            if let gifData {
-                ImageExporter.saveGifAsSheet(gifData, from: pin, completion: completion)
+            if let gifData = pin.gifData {
+                ImageExporter.saveGifAsSheet(gifData, from: pin) {}
             } else {
-                ImageExporter.saveAsSheet(image, from: pin, completion: completion)
+                ImageExporter.saveAsSheet(pin.currentImage, from: pin) {}
             }
         case .close:
             pin.dismiss()
             pinWindows.removeAll { $0 === pin }
-        case .draw, .mosaic:
-            let pinFrame = pin.frame
+        case .scrollCapture, .scrollCaptureDebug:
+            guard let rect = pin.captureRect else { return }
+            scrollCaptureDebugMode = (action == .scrollCaptureDebug)
             pin.dismiss()
             pinWindows.removeAll { $0 === pin }
-            openEditorForImage(image, frame: pinFrame, mode: action == .draw ? .draw : .mosaic)
-        }
-    }
-
-    private func openEditorForImage(_ image: CGImage, frame: CGRect, mode: CanvasEditMode) {
-        dismissPreview()
-        capturedImage = image
-        capturedRect = frame
-
-        let preview = CapturePreviewWindow(image: image, screenRect: frame)
-        preview.onAction = { [weak self] action in
-            self?.handleToolbarAction(action)
-        }
-        preview.onImageEdited = { [weak self] editedImage in
-            guard let self else { return }
-            self.capturedImage = editedImage
-            let nsImage = NSImage(cgImage: editedImage, size: NSSize(width: frame.width, height: frame.height))
-            if let imageView = self.previewWindow?.contentView as? NSImageView {
-                imageView.image = nsImage
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.startScrollCapture(rect: rect)
             }
+        case .recordGif:
+            guard let rect = pin.captureRect else { return }
+            pin.dismiss()
+            pinWindows.removeAll { $0 === pin }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.startGifRecording(rect: rect)
+            }
+        case .draw, .mosaic, .undo, .redo:
+            // Handled internally by PinWindow
+            break
         }
-        preview.makeKeyAndOrderFront(nil)
-        self.previewWindow = preview
-
-        // Immediately enter editing mode
-        preview.enterEditingMode(mode: mode, image: image)
     }
 
     // MARK: - Scroll Capture
@@ -336,17 +257,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             self.scrollCaptureManager = nil
 
-            // Show the result — copy to clipboard and show a preview
+            // Copy to clipboard
             ClipboardManager.copyToClipboard(finalImage)
 
-            // Show in a pin window, scaling to fit screen while maintaining aspect ratio
+            // Show in a floating window, scaling to fit screen while maintaining aspect ratio
             let scale = NSScreen.main?.backingScaleFactor ?? 2.0
             let pinRect = self.centeredPinRect(
                 pointWidth: CGFloat(finalImage.width) / scale,
                 pointHeight: CGFloat(finalImage.height) / scale
             )
 
-            let pin = PinWindow(image: finalImage, frame: pinRect)
+            let pin = PinWindow(image: finalImage, frame: pinRect, mode: .pinned)
             pin.onAction = { [weak self] action, pinWin in
                 self?.handlePinAction(action, pin: pinWin)
             }
@@ -364,7 +285,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Show border
         showScrollCaptureBorder(rect: rect)
 
-        // Show indicator
+        // Show indicator with countdown
         let indicator = RecordingIndicator()
         indicator.show(below: rect)
         indicator.onStop = { [weak self] in
@@ -372,7 +293,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         recordingIndicator = indicator
 
-        // Start recording
+        // ESC monitor (active during countdown and recording)
+        recordingEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 {
+                self?.stopGifRecording()
+                return nil
+            }
+            return event
+        }
+        recordingGlobalEscMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 {
+                self?.stopGifRecording()
+            }
+        }
+
+        // 3-second countdown, then start recording
+        indicator.startCountdown(seconds: 3) { [weak self] in
+            guard let self else { return }
+            self.beginRecording(rect: rect)
+        }
+    }
+
+    private func beginRecording(rect: CGRect) {
         let manager = GifRecordingManager(rect: rect)
         gifRecordingManager = manager
         gifRecordingStartTime = Date()
@@ -393,20 +335,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleGifRecordingComplete(frames: frames)
             }
         )
-
-        // ESC monitor (local + global, since user may be in another app)
-        recordingEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 53 {
-                self?.finishGifRecording()
-                return nil
-            }
-            return event
-        }
-        recordingGlobalEscMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 53 {
-                self?.finishGifRecording()
-            }
-        }
     }
 
     private func finishGifRecording() {
@@ -469,14 +397,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Copy GIF data to clipboard
             self.copyGifToClipboard(gifData)
 
-            // Show first frame in a pin window (frames are already 1x point size)
+            // Show first frame in a floating window (frames are Retina 2x)
             let firstFrame = frames[0]
+            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
             let pinRect = self.centeredPinRect(
-                pointWidth: CGFloat(firstFrame.width),
-                pointHeight: CGFloat(firstFrame.height)
+                pointWidth: CGFloat(firstFrame.width) / scale,
+                pointHeight: CGFloat(firstFrame.height) / scale
             )
 
-            let pin = PinWindow(image: firstFrame, frame: pinRect)
+            let pin = PinWindow(image: firstFrame, frame: pinRect, mode: .gif)
             pin.gifData = gifData
             pin.onAction = { [weak self] action, pinWin in
                 self?.handlePinAction(action, pin: pinWin)
@@ -552,24 +481,13 @@ extension AppDelegate: SelectionViewDelegate {
                 print("Capture failed")
                 return
             }
-            self.capturedImage = image
-            self.capturedRect = rect
 
-            let preview = CapturePreviewWindow(image: image, screenRect: rect)
-            preview.onAction = { [weak self] action in
-                self?.handleToolbarAction(action)
+            let pin = PinWindow(image: image, frame: rect, mode: .firstPreview, captureRect: rect)
+            pin.onAction = { [weak self] action, pinWin in
+                self?.handlePinAction(action, pin: pinWin)
             }
-            preview.onImageEdited = { [weak self] editedImage in
-                guard let self else { return }
-                self.capturedImage = editedImage
-                // Update the preview image view
-                let nsImage = NSImage(cgImage: editedImage, size: NSSize(width: rect.width, height: rect.height))
-                if let imageView = self.previewWindow?.contentView as? NSImageView {
-                    imageView.image = nsImage
-                }
-            }
-            preview.makeKeyAndOrderFront(nil)
-            self.previewWindow = preview
+            pin.makeKeyAndOrderFront(nil)
+            self.pinWindows.append(pin)
         }
     }
 

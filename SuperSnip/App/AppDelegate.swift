@@ -169,9 +169,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         switch action {
         case .copy:
             if let gifData = pin.gifData {
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                pasteboard.setData(gifData, forType: NSPasteboard.PasteboardType(UTType.gif.identifier))
+                copyGifToClipboard(gifData)
             } else {
                 ClipboardManager.copyToClipboard(image)
             }
@@ -469,9 +467,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             // Copy GIF data to clipboard
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.setData(gifData, forType: NSPasteboard.PasteboardType(UTType.gif.identifier))
+            self.copyGifToClipboard(gifData)
 
             // Show first frame in a pin window (frames are already 1x point size)
             let firstFrame = frames[0]
@@ -488,6 +484,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             pin.makeKeyAndOrderFront(nil)
             self.pinWindows.append(pin)
         }
+    }
+
+    /// Copy GIF data to clipboard using a temp file URL so receiving apps recognize animated GIF.
+    private func copyGifToClipboard(_ gifData: Data) {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("SuperSnip-recording.gif")
+        try? gifData.write(to: tempURL)
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([tempURL as NSURL])
+        pasteboard.setData(gifData, forType: NSPasteboard.PasteboardType(UTType.gif.identifier))
     }
 
     /// Compute a centered pin window rect that fits within max display bounds.

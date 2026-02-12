@@ -11,7 +11,17 @@ enum PinAction {
 
 final class PinWindow: NSPanel {
     let pinnedImage: CGImage
-    var gifData: Data?
+    var gifData: Data? {
+        didSet {
+            guard let gifData, let container = contentView else { return }
+            // Replace static image with animated GIF
+            if let imageView = container.subviews.compactMap({ $0 as? DraggableImageView }).first {
+                let gifImage = NSImage(data: gifData)
+                imageView.animates = true
+                imageView.image = gifImage
+            }
+        }
+    }
     var onAction: ((PinAction, PinWindow) -> Void)?
 
     private var toolbarWindow: NSPanel?

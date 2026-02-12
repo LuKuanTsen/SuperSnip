@@ -205,7 +205,7 @@ final class PinWindow: NSPanel {
     private func showToolbar() {
         guard toolbarWindow == nil else { return }
 
-        let toolbar = PinToolbar { [weak self] action in
+        let toolbar = PinToolbar(isGif: gifData != nil) { [weak self] action in
             guard let self else { return }
             self.onAction?(action, self)
         }
@@ -371,17 +371,25 @@ final class PinToolbarPanel: NSPanel {
 // MARK: - Pin Toolbar (SwiftUI)
 
 struct PinToolbar: View {
+    let isGif: Bool
     let onAction: (PinAction) -> Void
+
+    init(isGif: Bool = false, onAction: @escaping (PinAction) -> Void) {
+        self.isGif = isGif
+        self.onAction = onAction
+    }
 
     var body: some View {
         HStack(spacing: 2) {
             pinButton(icon: "doc.on.doc", tooltip: "Copy", action: .copy)
             pinButton(icon: "square.and.arrow.down", tooltip: "Save", action: .save)
 
-            Divider().frame(height: 20)
+            if !isGif {
+                Divider().frame(height: 20)
 
-            pinButton(icon: "pencil.tip", tooltip: "Draw", action: .draw)
-            pinButton(icon: "square.grid.3x3", tooltip: "Mosaic", action: .mosaic)
+                pinButton(icon: "pencil.tip", tooltip: "Draw", action: .draw)
+                pinButton(icon: "square.grid.3x3", tooltip: "Mosaic", action: .mosaic)
+            }
 
             Divider().frame(height: 20)
 
